@@ -1,6 +1,7 @@
 # ============================================================
-# TRADING APP - STREAMLIT CLOUD - HANDY OPTIMIERT
+# TRADING APP - STREAMLIT CLOUD - HANDY OPTIMIERT - FIXED
 # LTC KSM XRP XLM SHX - LONG / SHORT + ABC + Fibo + Score
+# Fix: OKX + Kraken + Coinbase zuerst (blocken Streamlit nicht)
 # ============================================================
 import streamlit as st
 import requests
@@ -9,7 +10,6 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Trading App", layout="wide", initial_sidebar_state="collapsed")
 
-# ===== HANDY STYLE - Grosse Buttons, grosse Schrift =====
 st.markdown("""
 <style>
 .stApp { background-color: #0d1117; color: white; }
@@ -24,7 +24,81 @@ div[data-testid="stMetricValue"] { color: white !important; font-size: 22px !imp
 </style>
 """, unsafe_allow_html=True)
 
+# ===== DATEN HOLEN - FIXED FÜR STREAMLIT CLOUD =====
 def hole_kerzen(symbol, interval, limit=300):
+    base = symbol.replace('USDT','')
+    okx_bar = '15m' if interval=='15m' else '1H' if interval=='1h' else '1D'
+    kraken_tf = 15 if interval=='15m' else 60 if interval=='1h' else 1440
+    cb_gran = 900 if interval=='15m' else 3600 if interval=='1h' else 86400
+
+    # 1. OKX - blockt fast nie, sehr zuverlässig auf Streamlit
+    try:
+        url = f'https://www.okx.com/api/v5/market/candles?instId={base}-USDT&bar={okx_bar}&limit={limit}'
+        r = requests.get(url, timeout=10, headers={'User-Agent':'Mozilla/5.0'})
+        j = r.json()
+        data = j.get('data')
+        if data:
+            data = data[::-1]
+            df = pd.DataFrame(data, columns=['time','open','high','low','close','vol','volCcy','volCcyQuote','confirm'])
+            df = df[['time','open','high','low','close','vol']].astype(float)
+            df['time'] = pd.to_datetime(df['time'], unit='ms')
+            if len(df) >= 50:
+                return df
+    except:
+        pass
+
+    # 2. Kraken - blockt nie
+    try:
+        pair = base + 'USD'
+        url = f'https://api.kraken.com/0/public/OHLC?pair={pair}&interval={kraken_tf}'
+        r = requests.get(url, timeout=10, headers={'User-Agent':'Mozilla/5.0'})
+        j = r.json()
+        res = j.get('result')
+        if res:
+            key = [k for k in res.keys() if k != 'last'][0]
+            arr = res[key]
+            df = pd.DataFrame(arr, columns=['time','open','high','low','close','vwap','vol','count'])
+            df = df[['time','open','high','low','close','vol']].astype(float)
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            df = df.tail(limit)
+            if len(df) >= 50:
+                return df
+    except:
+        pass
+
+    # 3. Coinbase Exchange - blockt nie
+    try:
+        url = f'https://api.exchange.coinbase.com/products/{base}-USD/candles?granularity={cb_gran}'
+        r = requests.get(url, timeout=10, headers={'User-Agent':'Mozilla/5.0'})
+        d = r.json()
+        if isinstance(d, list) and len(d) > 50:
+            d = d[::-1]
+            df = pd.DataFrame(d, columns=['time','low','high','open','close','vol'])
+            df = df[['time','open','high','low','close','vol']].astype(float)
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            if len(df) >= 50:
+                return df
+    except:
+        pass
+
+    # 4. Bitget - Backup
+    try:
+        bg = '15m' if interval=='15m' else '1H' if interval=='1h' else '1D'
+        url = f'https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={bg}&limit={limit}'
+        r = requests.get(url, timeout=10)
+        j = r.json()
+        data = j.get('data')
+        if data:
+            data = data[::-1]
+            df = pd.DataFrame(data, columns=['time','open','high','low','close','vol'])
+            df = df.astype(float)
+            df['time'] = pd.to_datetime(df['time'], unit='ms')
+            if len(df) >= 50:
+                return df
+    except:
+        pass
+
+    # 5. Bybit - letzter Versuch
     try:
         bi = '15' if interval=='15m' else '60' if interval=='1h' else 'D'
         url = f'https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={bi}&limit={limit}'
@@ -35,10 +109,14 @@ def hole_kerzen(symbol, interval, limit=300):
             df = pd.DataFrame(data, columns=['time','open','high','low','close','vol','turnover'])
             df = df[['time','open','high','low','close','vol']].astype(float)
             df['time'] = pd.to_datetime(df['time'], unit='ms')
-            if len(df) >= 50: return df
-    except: pass
+            if len(df) >= 50:
+                return df
+    except:
+        pass
+
+    # 6. Binance US - blockt weniger als Binance.com
     try:
-        url = f'https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
+        url = f'https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
         r = requests.get(url, timeout=10)
         if r.status_code==200:
             d = r.json()
@@ -46,7 +124,9 @@ def hole_kerzen(symbol, interval, limit=300):
             df = df[['time','open','high','low','close','vol']].astype(float)
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             if len(df)>=50: return df
-    except: pass
+    except:
+        pass
+
     return None
 
 def berechne_rsi(closes, periode=14):
@@ -168,7 +248,7 @@ def hole_btc():
     else: sig='NEUTRAL'
     return sig, preis, rsi
 
-# ===== MENÜ OBEN - Für Handy: oben, nicht links =====
+# ===== MENÜ OBEN - Für Handy =====
 st.title("📈 Trading App")
 st.caption("LTC • KSM • XRP • XLM • SHX  |  LONG / SHORT + ABC + Fibo + Score")
 
@@ -178,9 +258,11 @@ with col_m1:
 with col_m2:
     timeframe = st.selectbox("⏰ Timeframe", ['15m','1h','1d'], index=2)
 
+# Einstieg automatisch passend zum Coin - damit LTC nicht 2.60 zeigt
+default_einstieg = {'KSM':2.60,'LTC':41.50,'XRP':0.95,'XLM':0.13,'SHX':0.012}.get(coin, 2.60)
 col_m3, col_m4 = st.columns(2)
 with col_m3:
-    einstieg = st.number_input("Dein Einstieg", value=2.60, format="%.4f")
+    einstieg = st.number_input("Dein Einstieg", value=default_einstieg, format="%.4f")
 with col_m4:
     st.write("")
     st.write("")
@@ -193,7 +275,7 @@ with st.spinner(f"Lade {coin} {timeframe}..."):
     btc_sig, btc_preis, btc_rsi = hole_btc()
 
 if df is None:
-    st.error("❌ Keine Daten - Nochmal auf SCANNEN klicken.")
+    st.error("❌ Keine Daten - Nochmal auf SCANNEN klicken. Wenn es bleibt, in Streamlit oben rechts auf 'Reboot app' klicken.")
     st.stop()
 
 closes = df['close'].tolist(); preis = closes[-1]
@@ -264,7 +346,7 @@ elif score<=20:
 else:
     ls='WARTEN'; ls_grund=f'Score {score}/100 = Zu schwach für LONG, zu stark für SHORT.'; ls_entry=preis; ls_stop=preis*0.98; ls_target=preis*1.02
 
-# ===== LONG / SHORT BOX - GANZ GROSS =====
+# ===== LONG / SHORT BOX =====
 if ls=='LONG':
     st.markdown(f"<div style='background:#052e16;border:3px solid #22c55e;border-radius:16px;padding:20px;text-align:center'><div style='font-size:54px;font-weight:900'>🟢 LONG</div><div style='font-size:18px'>KAUFEN</div><div style='margin-top:10px'>{ls_grund}</div></div>", unsafe_allow_html=True)
 elif ls=='SHORT':
